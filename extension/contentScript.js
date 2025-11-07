@@ -95,11 +95,22 @@
 
     const refreshButton = document.createElement('button');
     refreshButton.type = 'button';
-    refreshButton.className = 'clh-button';
-    refreshButton.textContent = '刷新列表';
-    refreshButton.addEventListener('click', () => {
-      if (state.isLoggedIn) {
-        fetchLiveVideos();
+    refreshButton.className = 'clh-button clh-refresh-button';
+    refreshButton.textContent = '刷新状态';
+    refreshButton.addEventListener('click', async () => {
+      const originalText = refreshButton.textContent;
+      refreshButton.disabled = true;
+      refreshButton.textContent = '刷新中...';
+      
+      try {
+        if (state.isLoggedIn) {
+          await fetchLiveVideos();
+        } else {
+          await checkLoginAndFetch();
+        }
+      } finally {
+        refreshButton.disabled = false;
+        // Text will be updated by updateLoginStatus function
       }
     });
 
@@ -176,7 +187,7 @@
     }
   }
 
-  function checkLoginAndFetch() {
+  async function checkLoginAndFetch() {
     const detection = detectLoginState();
     updateLoginStatus(detection.loggedIn, detection);
 
@@ -188,7 +199,7 @@
 
     state.isLoggedIn = true;
     extractApiKey();
-    fetchLiveVideos();
+    await fetchLiveVideos();
   }
 
   function detectLoginState() {
@@ -569,17 +580,25 @@
       return;
     }
 
+    const refreshButton = state.container?.querySelector('.clh-refresh-button');
+    
     if (loggedIn) {
       state.loginStatusEl.textContent = '已登录';
       state.loginStatusEl.dataset.variant = 'ok';
       if (state.container) {
         state.container.dataset.loginState = 'signed-in';
       }
+      if (refreshButton) {
+        refreshButton.textContent = '刷新列表';
+      }
     } else {
       state.loginStatusEl.textContent = '未登录';
       state.loginStatusEl.dataset.variant = 'warn';
       if (state.container) {
         state.container.dataset.loginState = 'signed-out';
+      }
+      if (refreshButton) {
+        refreshButton.textContent = '刷新状态';
       }
     }
 
