@@ -1,0 +1,17 @@
+# Dependency directories
+node_modules/
+bower_components/
+
+# Build outputs
+/dist/
+/build/
+/out/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE settings
+.vscode/
+.idea/
