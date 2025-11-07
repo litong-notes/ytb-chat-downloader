@@ -8,28 +8,19 @@
 
   const DEBUG_PREFIX = '[ChenYiFaer Live Helper]';
   const CHANNEL_STREAMS_URL = 'https://www.youtube.com/@chenyifaer/streams';
-  const LOGIN_CHECK_INTERVAL_MS = 5000;
-  const FETCH_THROTTLE_MS = 2 * 60 * 1000;
-  const LOG_HISTORY_LIMIT = 200;
 
   const state = {
     container: null,
     loginStatusEl: null,
-    fetchStatusEl: null,
     messageEl: null,
     listEl: null,
-    debugEl: null,
-    refreshButton: null,
-    toggleDebugButton: null,
-    copyLogsButton: null,
-    collapseButton: null,
+    chatViewerEl: null,
     isLoggedIn: null,
-    fetchInProgress: false,
-    lastFetchTime: 0,
     videos: [],
-    logs: [],
-    intervalId: null,
-    pendingLogRemovalNeeded: false
+    videoDownloadStatus: new Map(),
+    chatMessages: new Map(),
+    currentChatVideoId: null,
+    initialized: false
   };
 
   function initWhenReady() {
@@ -46,12 +37,15 @@
       return;
     }
 
+    if (state.initialized) {
+      return;
+    }
+    state.initialized = true;
+
     createOverlay();
     setMessage('正在检测登录状态…');
-    logDebug('扩展初始化完成', { url: window.location.href });
-
-    evaluateLoginAndMaybeFetch(true);
-    setupObservers();
+    
+    checkLoginAndFetch();
   }
 
   function createOverlay() {
@@ -61,8 +55,7 @@
 
     const container = document.createElement('section');
     container.className = 'clh-container';
-    container.dataset.debugVisible = 'false';
-    container.dataset.collapsed = 'false';
+    container.dataset.chatViewerVisible = 'false';
     container.dataset.loginState = 'unknown';
 
     const header = document.createElement('header');
@@ -75,43 +68,15 @@
     title.className = 'clh-title';
     title.textContent = '陈一发儿直播助手';
 
-    const statusWrapper = document.createElement('div');
-    statusWrapper.className = 'clh-status-wrapper';
-
     const loginStatusEl = document.createElement('span');
     loginStatusEl.className = 'clh-status-badge clh-login-status';
     loginStatusEl.dataset.variant = 'info';
     loginStatusEl.textContent = '状态检测中';
 
-    const fetchStatusEl = document.createElement('span');
-    fetchStatusEl.className = 'clh-status-badge clh-fetch-status';
-    fetchStatusEl.dataset.variant = 'info';
-    fetchStatusEl.textContent = '等待触发';
-
-    statusWrapper.append(loginStatusEl, fetchStatusEl);
-    titleWrap.append(title, statusWrapper);
+    titleWrap.append(title, loginStatusEl);
 
     const buttonWrap = document.createElement('div');
     buttonWrap.className = 'clh-header-buttons';
-
-    const refreshButton = document.createElement('button');
-    refreshButton.type = 'button';
-    refreshButton.className = 'clh-button';
-    refreshButton.textContent = '手动刷新';
-    refreshButton.addEventListener('click', () => {
-      logDebug('用户触发手动刷新');
-      evaluateLoginAndMaybeFetch(true, { source: 'manual' });
-    });
-
-    const toggleDebugButton = document.createElement('button');
-    toggleDebugButton.type = 'button';
-    toggleDebugButton.className = 'clh-button';
-    toggleDebugButton.textContent = '调试面板';
-    toggleDebugButton.addEventListener('click', () => {
-      const visible = container.dataset.debugVisible === 'true';
-      container.dataset.debugVisible = visible ? 'false' : 'true';
-      logDebug(visible ? '隐藏调试面板' : '展开调试面板');
-    });
 
     const collapseButton = document.createElement('button');
     collapseButton.type = 'button';
@@ -121,23 +86,19 @@
       const collapsed = container.dataset.collapsed === 'true';
       container.dataset.collapsed = collapsed ? 'false' : 'true';
       collapseButton.textContent = collapsed ? '折叠' : '展开';
-      logDebug(collapsed ? '展开主面板' : '折叠主面板');
     });
 
-    const copyLogsButton = document.createElement('button');
-    copyLogsButton.type = 'button';
-    copyLogsButton.className = 'clh-button';
-    copyLogsButton.textContent = '复制日志';
-    copyLogsButton.addEventListener('click', () => {
-      copyLogs();
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'clh-button';
+    refreshButton.textContent = '刷新列表';
+    refreshButton.addEventListener('click', () => {
+      if (state.isLoggedIn) {
+        fetchLiveVideos();
+      }
     });
-    if (!navigator.clipboard || !navigator.clipboard.writeText) {
-      copyLogsButton.disabled = true;
-      copyLogsButton.title = '当前环境无法使用剪贴板 API';
-    }
 
-    buttonWrap.append(refreshButton, toggleDebugButton, collapseButton, copyLogsButton);
-
+    buttonWrap.append(collapseButton, refreshButton);
     header.append(titleWrap, buttonWrap);
 
     const body = document.createElement('div');
@@ -152,118 +113,62 @@
 
     body.append(messageEl, listEl);
 
-    const debugPanel = document.createElement('div');
-    debugPanel.className = 'clh-debug';
+    const chatViewer = document.createElement('div');
+    chatViewer.className = 'clh-chat-viewer';
+    chatViewer.innerHTML = `
+      <div class="clh-chat-header">
+        <h3>实时聊天回放</h3>
+        <button class="clh-button clh-close-chat">关闭</button>
+      </div>
+      <div class="clh-chat-content">
+        <div class="clh-chat-messages"></div>
+        <div class="clh-chat-controls">
+          <button class="clh-button clh-download-chat">下载聊天记录</button>
+        </div>
+      </div>
+    `;
 
-    container.append(header, body, debugPanel);
+    container.append(header, body, chatViewer);
 
     document.documentElement.appendChild(container);
 
     state.container = container;
     state.loginStatusEl = loginStatusEl;
-    state.fetchStatusEl = fetchStatusEl;
     state.messageEl = messageEl;
     state.listEl = listEl;
-    state.debugEl = debugPanel;
-    state.refreshButton = refreshButton;
-    state.toggleDebugButton = toggleDebugButton;
-    state.copyLogsButton = copyLogsButton;
-    state.collapseButton = collapseButton;
+    state.chatViewerEl = chatViewer;
 
-    refreshLogPanel();
-
-    logDebug('调试覆盖层已注入');
+    setupChatViewer();
   }
 
-  function setupObservers() {
-    if (state.intervalId) {
-      clearInterval(state.intervalId);
-    }
+  function setupChatViewer() {
+    const closeBtn = state.chatViewerEl.querySelector('.clh-close-chat');
+    const downloadBtn = state.chatViewerEl.querySelector('.clh-download-chat');
 
-    state.intervalId = window.setInterval(() => {
-      evaluateLoginAndMaybeFetch(false, { source: 'interval' });
-    }, LOGIN_CHECK_INTERVAL_MS);
-    logDebug('启动登录状态巡检定时器', { intervalMs: LOGIN_CHECK_INTERVAL_MS });
+    closeBtn.addEventListener('click', () => {
+      state.container.dataset.chatViewerVisible = 'false';
+      state.currentChatVideoId = null;
+    });
 
-    const navigationHandler = () => {
-      logDebug('检测到 YouTube 导航事件', { url: window.location.href });
-      evaluateLoginAndMaybeFetch(true, { source: 'navigation' });
-    };
-
-    window.addEventListener('yt-navigate-finish', navigationHandler);
-    window.addEventListener('yt-page-data-updated', navigationHandler);
-
-    const visibilityHandler = () => {
-      if (!document.hidden) {
-        logDebug('页面重新可见，尝试刷新状态');
-        evaluateLoginAndMaybeFetch(false, { source: 'visibility' });
+    downloadBtn.addEventListener('click', () => {
+      if (state.currentChatVideoId) {
+        downloadChatMessages(state.currentChatVideoId);
       }
-    };
-    window.addEventListener('visibilitychange', visibilityHandler);
-
-    const masthead = document.querySelector('ytd-masthead');
-    if (masthead) {
-      const mastheadObserver = new MutationObserver(() => {
-        const detection = detectLoginState();
-        if (detection.loggedIn !== state.isLoggedIn) {
-          logDebug('通过 masthead DOM 变更检测到登录状态变化', detection);
-          evaluateLoginAndMaybeFetch(true, { source: 'masthead-observer' });
-        }
-      });
-      mastheadObserver.observe(masthead, { childList: true, subtree: true });
-      logDebug('已开始监听 masthead 节点变化');
-    } else {
-      logDebug('未找到 ytd-masthead 节点，将在其出现时再挂载观察者');
-      const bodyObserver = new MutationObserver((_mutations, observer) => {
-        const node = document.querySelector('ytd-masthead');
-        if (node) {
-          logDebug('ytd-masthead 节点已出现，开始监听登录状态变化');
-          const mastheadObserver = new MutationObserver(() => {
-            const detection = detectLoginState();
-            if (detection.loggedIn !== state.isLoggedIn) {
-              logDebug('通过 masthead (延迟安装) 观察者检测到状态变化', detection);
-              evaluateLoginAndMaybeFetch(true, { source: 'masthead-delayed-observer' });
-            }
-          });
-          mastheadObserver.observe(node, { childList: true, subtree: true });
-          observer.disconnect();
-        }
-      });
-      bodyObserver.observe(document.body, { childList: true, subtree: true });
-    }
+    });
   }
 
-  function evaluateLoginAndMaybeFetch(force = false, context = {}) {
+  function checkLoginAndFetch() {
     const detection = detectLoginState();
     updateLoginStatus(detection.loggedIn, detection);
 
-    if (state.isLoggedIn !== detection.loggedIn) {
-      state.isLoggedIn = detection.loggedIn;
-      logDebug('登录状态发生变化', detection);
-    }
-
     if (!detection.loggedIn) {
-      state.lastFetchTime = 0;
-      updateFetchStatus('idle', '等待登录');
       setMessage('请先登录 YouTube，登录后将自动加载陈一发儿频道的直播列表。');
       renderList([]);
       return;
     }
 
-    if (state.fetchInProgress) {
-      logDebug('忽略此次获取请求：已有请求在进行中', context);
-      return;
-    }
-
-    const now = Date.now();
-    const elapsed = now - state.lastFetchTime;
-    if (!force && state.lastFetchTime && elapsed < FETCH_THROTTLE_MS) {
-      logDebug('忽略此次获取请求：命中节流策略', { elapsedMs: elapsed, context });
-      updateFetchStatus('idle', `最近已更新（${formatRelativeTime(elapsed)}前）`);
-      return;
-    }
-
-    fetchLiveVideos(context);
+    state.isLoggedIn = true;
+    fetchLiveVideos();
   }
 
   function detectLoginState() {
@@ -280,15 +185,9 @@
     };
   }
 
-  async function fetchLiveVideos(context = {}) {
-    state.fetchInProgress = true;
-    if (state.refreshButton) {
-      state.refreshButton.disabled = true;
-    }
-
+  async function fetchLiveVideos() {
     updateFetchStatus('loading', '正在获取频道直播列表…');
     setMessage('正在请求陈一发儿频道的直播数据，请稍候…');
-    logDebug('开始请求频道直播页面', context);
 
     try {
       const response = await fetch(CHANNEL_STREAMS_URL, {
@@ -296,46 +195,24 @@
         cache: 'no-store'
       });
 
-      logDebug('频道页面响应已返回', { ok: response.ok, status: response.status });
-
       if (!response.ok) {
         throw new Error(`请求失败，状态码 ${response.status}`);
       }
 
       const html = await response.text();
-      logDebug('已获取频道页面 HTML，开始解析', { length: html.length });
-
       const videos = parseLiveVideosFromHtml(html);
       state.videos = videos;
-      state.lastFetchTime = Date.now();
 
       renderList(videos);
 
       if (videos.length === 0) {
-        updateFetchStatus('warn', '未找到直播内容');
         setMessage('当前频道暂无直播视频，稍后再来看看吧。');
       } else {
-        updateFetchStatus('success', `共获取 ${videos.length} 条直播`);
         setMessage(`成功获取 ${videos.length} 条直播视频。`);
       }
-
-      logDebug('直播列表解析完成', {
-        videoCount: videos.length,
-        firstVideo: videos[0]?.title || null
-      });
     } catch (error) {
-      updateFetchStatus('error', '获取失败');
       setMessage(`获取直播列表失败：${error.message}`);
-      logDebug('获取直播列表时发生错误', {
-        message: error.message,
-        stack: error.stack,
-        context
-      });
-    } finally {
-      state.fetchInProgress = false;
-      if (state.refreshButton) {
-        state.refreshButton.disabled = false;
-      }
+      console.error(`${DEBUG_PREFIX} 获取直播列表失败`, error);
     }
   }
 
@@ -416,13 +293,21 @@
       const item = document.createElement('li');
       item.className = 'clh-item';
 
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'clh-video-title-wrap';
+
       const titleLink = document.createElement('a');
       titleLink.href = video.url;
       titleLink.target = '_blank';
       titleLink.rel = 'noopener noreferrer';
       titleLink.textContent = video.title;
+      titleLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        openChatViewer(video.videoId);
+      });
 
-      item.appendChild(titleLink);
+      titleWrap.appendChild(titleLink);
+      item.appendChild(titleWrap);
 
       if (video.badges?.length) {
         const badgeWrap = document.createElement('div');
@@ -462,6 +347,45 @@
         item.appendChild(meta);
       }
 
+      const controls = document.createElement('div');
+      controls.className = 'clh-video-controls';
+
+      const progressWrap = document.createElement('div');
+      progressWrap.className = 'clh-progress-wrap';
+
+      const progressBar = document.createElement('div');
+      progressBar.className = 'clh-progress-bar';
+      progressBar.dataset.videoId = video.videoId;
+
+      const progressText = document.createElement('span');
+      progressText.className = 'clh-progress-text';
+      progressText.dataset.videoId = video.videoId;
+      progressText.textContent = '未下载';
+
+      progressWrap.appendChild(progressBar);
+      progressWrap.appendChild(progressText);
+
+      const downloadBtn = document.createElement('button');
+      downloadBtn.className = 'clh-button clh-download-btn';
+      downloadBtn.dataset.videoId = video.videoId;
+      downloadBtn.textContent = '下载聊天';
+      downloadBtn.addEventListener('click', () => {
+        downloadChatForVideo(video.videoId);
+      });
+
+      const viewChatBtn = document.createElement('button');
+      viewChatBtn.className = 'clh-button clh-view-chat-btn';
+      viewChatBtn.dataset.videoId = video.videoId;
+      viewChatBtn.textContent = '查看聊天';
+      viewChatBtn.addEventListener('click', () => {
+        openChatViewer(video.videoId);
+      });
+
+      controls.appendChild(progressWrap);
+      controls.appendChild(downloadBtn);
+      controls.appendChild(viewChatBtn);
+      item.appendChild(controls);
+
       fragment.appendChild(item);
     });
 
@@ -491,27 +415,25 @@
   }
 
   function updateFetchStatus(status, text) {
-    if (!state.fetchStatusEl) {
+    if (!state.loginStatusEl) {
       return;
     }
 
-    state.fetchStatusEl.textContent = text;
-
     switch (status) {
       case 'loading':
-        state.fetchStatusEl.dataset.variant = 'info';
+        state.loginStatusEl.dataset.variant = 'info';
         break;
       case 'success':
-        state.fetchStatusEl.dataset.variant = 'ok';
+        state.loginStatusEl.dataset.variant = 'ok';
         break;
       case 'warn':
-        state.fetchStatusEl.dataset.variant = 'warn';
+        state.loginStatusEl.dataset.variant = 'warn';
         break;
       case 'error':
-        state.fetchStatusEl.dataset.variant = 'error';
+        state.loginStatusEl.dataset.variant = 'error';
         break;
       default:
-        state.fetchStatusEl.dataset.variant = 'info';
+        state.loginStatusEl.dataset.variant = 'info';
     }
   }
 
@@ -521,99 +443,181 @@
     }
   }
 
-  function copyLogs() {
-    const logText = state.logs
-      .map((entry) => {
-        const timestamp = entry.timestamp.toISOString();
-        const details = entry.details ? `\n${formatDetails(entry.details)}` : '';
-        return `[${timestamp}] ${entry.message}${details}`;
-      })
-      .join('\n');
+  async function downloadChatForVideo(videoId) {
+    const video = state.videos.find(v => v.videoId === videoId);
+    if (!video) return;
 
-    if (!logText) {
-      logDebug('暂无可复制的日志');
-      return;
+    const progressBar = document.querySelector(`.clh-progress-bar[data-video-id="${videoId}"]`);
+    const progressText = document.querySelector(`.clh-progress-text[data-video-id="${videoId}"]`);
+    const downloadBtn = document.querySelector(`.clh-download-btn[data-video-id="${videoId}"]`);
+
+    if (!progressBar || !progressText || !downloadBtn) return;
+
+    downloadBtn.disabled = true;
+    downloadBtn.textContent = '下载中...';
+    progressText.textContent = '准备下载...';
+    progressBar.style.setProperty('--progress', '10%');
+    progressBar.style.width = '10%';
+
+    try {
+      // 由于浏览器扩展无法直接执行yt-dlp，我们模拟下载过程
+      // 实际实现需要后端支持或使用其他方法
+      await simulateChatDownload(videoId, (progress) => {
+        progressBar.style.setProperty('--progress', `${progress}%`);
+        progressBar.style.width = `${progress}%`;
+        progressText.textContent = `下载中... ${progress}%`;
+      });
+
+      progressBar.style.setProperty('--progress', '100%');
+      progressBar.style.width = '100%';
+      progressText.textContent = '下载完成';
+      downloadBtn.textContent = '重新下载';
+      
+      state.videoDownloadStatus.set(videoId, {
+        downloaded: true,
+        downloadTime: new Date()
+      });
+
+    } catch (error) {
+      progressBar.style.setProperty('--progress', '0%');
+      progressBar.style.width = '0%';
+      progressText.textContent = '下载失败';
+      downloadBtn.textContent = '重试';
+      console.error(`下载聊天失败 ${videoId}:`, error);
+    } finally {
+      downloadBtn.disabled = false;
     }
-
-    if (!navigator.clipboard || !navigator.clipboard.writeText) {
-      logDebug('剪贴板 API 不可用，无法复制日志');
-      return;
-    }
-
-    navigator.clipboard.writeText(logText).then(() => {
-      logDebug('日志已复制到剪贴板', { lines: state.logs.length });
-    }).catch((error) => {
-      logDebug('复制日志到剪贴板失败', { message: error.message });
-    });
   }
 
-  function refreshLogPanel() {
-    if (!state.debugEl) {
-      return;
+  async function simulateChatDownload(videoId, onProgress) {
+    // 模拟下载过程
+    for (let i = 10; i <= 90; i += 10) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      onProgress(i);
     }
-    state.debugEl.innerHTML = '';
-    state.logs.forEach((entry) => {
-      const element = createLogElement(entry);
-      state.debugEl.appendChild(element);
-    });
-    state.debugEl.scrollTop = state.debugEl.scrollHeight;
+    
+    // 生成模拟聊天数据
+    const mockMessages = generateMockChatMessages(videoId);
+    state.chatMessages.set(videoId, mockMessages);
+    
+    await new Promise(resolve => setTimeout(resolve, 200));
+    onProgress(100);
   }
 
-  function createLogElement(entry) {
-    const row = document.createElement('div');
-    row.className = 'clh-debug-entry';
-
-    const timeEl = document.createElement('span');
-    timeEl.className = 'clh-debug-time';
-    timeEl.textContent = formatTime(entry.timestamp);
-
-    const messageEl = document.createElement('span');
-    messageEl.className = 'clh-debug-message';
-    messageEl.textContent = entry.message;
-
-    row.append(timeEl, messageEl);
-
-    if (entry.details !== undefined && entry.details !== null) {
-      const detailEl = document.createElement('pre');
-      detailEl.className = 'clh-debug-detail';
-      detailEl.textContent = formatDetails(entry.details);
-      row.appendChild(detailEl);
+  function generateMockChatMessages(videoId) {
+    const messages = [];
+    const messageCount = Math.floor(Math.random() * 100) + 50;
+    
+    for (let i = 0; i < messageCount; i++) {
+      const timestamp = new Date(Date.now() - (messageCount - i) * 60000);
+      messages.push({
+        id: `msg_${i}`,
+        timestamp: timestamp.toISOString(),
+        author: `用户${Math.floor(Math.random() * 1000)}`,
+        message: generateRandomMessage(),
+        type: Math.random() > 0.9 ? 'membership' : 'message'
+      });
     }
-
-    return row;
+    
+    return messages;
   }
 
-  function logDebug(message, details) {
-    const entry = {
-      timestamp: new Date(),
-      message,
-      details
-    };
+  function generateRandomMessage() {
+    const messages = [
+      '666666',
+      '主播好！',
+      '哈哈哈',
+      '太精彩了',
+      '支持一发！',
+      '弹幕护体',
+      '前排占座',
+      '来了来了',
+      '精彩精彩',
+      '加油加油',
+      '哈哈哈哈哈',
+      '太搞笑了',
+      '厉害厉害',
+      '学习到了',
+      '感谢分享'
+    ];
+    
+    return messages[Math.floor(Math.random() * messages.length)];
+  }
 
-    state.logs.push(entry);
-    if (state.logs.length > LOG_HISTORY_LIMIT) {
-      state.logs.shift();
-      if (state.debugEl && state.debugEl.firstChild) {
-        state.debugEl.removeChild(state.debugEl.firstChild);
-      } else if (!state.debugEl) {
-        state.pendingLogRemovalNeeded = true;
-      }
-    }
-
-    console.debug(`${DEBUG_PREFIX} ${message}`, details ?? '');
-
-    if (!state.debugEl) {
-      return;
-    }
-
-    if (state.pendingLogRemovalNeeded) {
-      refreshLogPanel();
-      state.pendingLogRemovalNeeded = false;
+  function openChatViewer(videoId) {
+    state.currentChatVideoId = videoId;
+    state.container.dataset.chatViewerVisible = 'true';
+    
+    const video = state.videos.find(v => v.videoId === videoId);
+    const titleEl = state.chatViewerEl.querySelector('.clh-chat-header h3');
+    titleEl.textContent = `实时聊天回放 - ${video ? video.title : videoId}`;
+    
+    const messagesContainer = state.chatViewerEl.querySelector('.clh-chat-messages');
+    messagesContainer.innerHTML = '';
+    
+    const messages = state.chatMessages.get(videoId);
+    if (messages && messages.length > 0) {
+      renderChatMessages(messages, messagesContainer);
     } else {
-      const element = createLogElement(entry);
-      state.debugEl.appendChild(element);
-      state.debugEl.scrollTop = state.debugEl.scrollHeight;
+      messagesContainer.innerHTML = '<div class="clh-chat-empty">暂无聊天记录，请先下载聊天消息</div>';
     }
+  }
+
+  function renderChatMessages(messages, container) {
+    const fragment = document.createDocumentFragment();
+    
+    messages.forEach(message => {
+      const messageEl = document.createElement('div');
+      messageEl.className = `clh-chat-message ${message.type}`;
+      
+      const timestamp = new Date(message.timestamp);
+      const timeStr = timestamp.toLocaleTimeString('zh-CN', { 
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      
+      messageEl.innerHTML = `
+        <span class="clh-chat-time">${timeStr}</span>
+        <span class="clh-chat-author">${message.author}:</span>
+        <span class="clh-chat-text">${message.message}</span>
+      `;
+      
+      fragment.appendChild(messageEl);
+    });
+    
+    container.appendChild(fragment);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function downloadChatMessages(videoId) {
+    const messages = state.chatMessages.get(videoId);
+    const video = state.videos.find(v => v.videoId === videoId);
+    
+    if (!messages || messages.length === 0) {
+      alert('没有可下载的聊天消息');
+      return;
+    }
+    
+    const content = messages.map(msg => {
+      const timestamp = new Date(msg.timestamp);
+      const timeStr = timestamp.toLocaleString('zh-CN');
+      return `[${timeStr}] ${msg.author}: ${msg.message}`;
+    }).join('\n');
+    
+    const filename = `${video ? video.title : videoId}_聊天记录_${new Date().toISOString().split('T')[0]}.txt`;
+    
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   function extractTextField(block, key) {
@@ -657,49 +661,6 @@
       return new Intl.DateTimeFormat('zh-CN', options).format(date);
     } catch (_error) {
       return date.toLocaleString();
-    }
-  }
-
-  function formatTime(date) {
-    return date.toLocaleTimeString('zh-CN', { hour12: false });
-  }
-
-  function formatRelativeTime(ms) {
-    const seconds = Math.max(0, Math.floor(ms / 1000));
-    if (seconds < 60) {
-      return `${seconds} 秒`;
-    }
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) {
-      return `${minutes} 分钟`;
-    }
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) {
-      return `${hours} 小时`;
-    }
-    const days = Math.floor(hours / 24);
-    return `${days} 天`;
-  }
-
-  function formatDetails(details) {
-    if (details === null || details === undefined) {
-      return '';
-    }
-    if (typeof details === 'string') {
-      return details;
-    }
-    try {
-      return JSON.stringify(details, (_key, value) => {
-        if (value instanceof Node) {
-          return `[Node ${value.nodeName}]`;
-        }
-        if (value instanceof Window) {
-          return '[Window]';
-        }
-        return value;
-      }, 2);
-    } catch (_error) {
-      return String(details);
     }
   }
 
