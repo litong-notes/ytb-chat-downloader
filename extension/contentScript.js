@@ -155,6 +155,7 @@
     state.chatViewerEl = chatViewer;
 
     setupChatViewer();
+    setupDragging(header, container);
   }
 
   function setupChatViewer() {
@@ -169,6 +170,62 @@
     downloadBtn.addEventListener('click', () => {
       if (state.currentChatVideoId) {
         downloadChatMessages(state.currentChatVideoId);
+      }
+    });
+  }
+
+  function setupDragging(dragHandle, container) {
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let initialX = 0;
+    let initialY = 0;
+
+    dragHandle.addEventListener('mousedown', (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.closest('button')) {
+        return;
+      }
+
+      isDragging = true;
+      dragHandle.classList.add('dragging');
+
+      const rect = container.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      initialX = rect.left;
+      initialY = rect.top;
+
+      container.style.right = 'auto';
+      container.style.left = `${initialX}px`;
+      container.style.top = `${initialY}px`;
+
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+
+      const deltaX = e.clientX - startX;
+      const deltaY = e.clientY - startY;
+
+      let newX = initialX + deltaX;
+      let newY = initialY + deltaY;
+
+      const rect = container.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width;
+      const maxY = window.innerHeight - rect.height;
+
+      newX = Math.max(0, Math.min(newX, maxX));
+      newY = Math.max(0, Math.min(newY, maxY));
+
+      container.style.left = `${newX}px`;
+      container.style.top = `${newY}px`;
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        dragHandle.classList.remove('dragging');
       }
     });
   }
