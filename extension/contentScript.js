@@ -20,7 +20,12 @@
     videoDownloadStatus: new Map(),
     chatMessages: new Map(),
     currentChatVideoId: null,
-    initialized: false
+    initialized: false,
+    continuationToken: null,
+    isLoadingMore: false,
+    hasMore: true,
+    totalFetched: 0,
+    apiKey: null
   };
 
   function initWhenReady() {
@@ -157,6 +162,20 @@
     });
   }
 
+  function extractApiKey() {
+    try {
+      const scriptText = document.documentElement.innerHTML;
+      const apiKeyMatch = scriptText.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+      if (apiKeyMatch) {
+        state.apiKey = apiKeyMatch[1];
+      } else {
+        state.apiKey = 'AIzaSyAO90d0o_cysLkFLV7-IqsmyGlInL4l3_I';
+      }
+    } catch (error) {
+      state.apiKey = 'AIzaSyAO90d0o_cysLkFLV7-IqsmyGlInL4l3_I';
+    }
+  }
+
   function checkLoginAndFetch() {
     const detection = detectLoginState();
     updateLoginStatus(detection.loggedIn, detection);
@@ -168,6 +187,7 @@
     }
 
     state.isLoggedIn = true;
+    extractApiKey();
     fetchLiveVideos();
   }
 
@@ -186,6 +206,11 @@
   }
 
   async function fetchLiveVideos() {
+    state.videos = [];
+    state.continuationToken = null;
+    state.hasMore = true;
+    state.totalFetched = 0;
+    
     updateFetchStatus('loading', '正在获取频道直播列表…');
     setMessage('正在请求陈一发儿频道的直播数据，请稍候…');
 
@@ -200,20 +225,158 @@
       }
 
       const html = await response.text();
-      const videos = parseLiveVideosFromHtml(html);
-      state.videos = videos;
+      const parseResult = parseLiveVideosFromHtml(html);
+      state.videos = parseResult.videos;
+      state.continuationToken = parseResult.continuationToken;
+      state.totalFetched = parseResult.videos.length;
 
-      renderList(videos);
+      renderList(state.videos);
 
-      if (videos.length === 0) {
-        setMessage('当前频道暂无直播视频，稍后再来看看吧。');
+      if (state.continuationToken && state.hasMore) {
+        setMessage(`已加载 ${state.totalFetched} 条视频，正在获取更多…`);
+        await fetchMoreVideos();
       } else {
-        setMessage(`成功获取 ${videos.length} 条直播视频。`);
+        updateFetchStatus('success', '');
+        if (state.videos.length === 0) {
+          setMessage('当前频道暂无直播视频，稍后再来看看吧。');
+        } else {
+          setMessage(`成功获取全部 ${state.videos.length} 条直播视频。`);
+        }
       }
     } catch (error) {
       setMessage(`获取直播列表失败：${error.message}`);
       console.error(`${DEBUG_PREFIX} 获取直播列表失败`, error);
+      updateFetchStatus('error', '');
     }
+  }
+
+  async function fetchMoreVideos() {
+    if (state.isLoadingMore || !state.continuationToken || !state.hasMore) {
+      return;
+    }
+
+    state.isLoadingMore = true;
+
+    try {
+      const apiKey = state.apiKey || 'AIzaSyAO90d0o_cysLkFLV7-IqsmyGlInL4l3_I';
+      const response = await fetch(`https://www.youtube.com/youtubei/v1/browse?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GOOG-API-CLIENT': 'gl-js/ fire 8.0.0'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          continuation: state.continuationToken,
+          context: {
+            client: {
+              clientName: 'WEB',
+              clientVersion: '2.20240101.00.00'
+            }
+          }
+        })
+      });
+
+      if (!response.ok) {
+        console.warn(`${DEBUG_PREFIX} 获取下一页失败，状态码 ${response.status}`);
+        state.hasMore = false;
+        return;
+      }
+
+      const data = await response.json();
+      const parseResult = parseMoreVideosFromResponse(data);
+      
+      if (parseResult.videos.length > 0) {
+        const uniqueVideos = parseResult.videos.filter(
+          newVideo => !state.videos.some(existingVideo => existingVideo.videoId === newVideo.videoId)
+        );
+        state.videos.push(...uniqueVideos);
+        state.totalFetched = state.videos.length;
+        renderList(state.videos);
+        setMessage(`已加载 ${state.totalFetched} 条视频，正在获取更多…`);
+      }
+
+      state.continuationToken = parseResult.continuationToken;
+
+      if (state.continuationToken) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await fetchMoreVideos();
+      } else {
+        state.hasMore = false;
+        updateFetchStatus('success', '');
+        setMessage(`成功获取全部 ${state.videos.length} 条直播视频。`);
+      }
+    } catch (error) {
+      console.warn(`${DEBUG_PREFIX} 获取更多视频失败`, error);
+      state.hasMore = false;
+      setMessage(`获取更多视频失败，已获取 ${state.videos.length} 条视频。`);
+    } finally {
+      state.isLoadingMore = false;
+    }
+  }
+
+  function parseMoreVideosFromResponse(data) {
+    const results = new Map();
+    let continuationToken = null;
+
+    try {
+      const onResponseReceivedActions = data.onResponseReceivedActions || [];
+      
+      for (const action of onResponseReceivedActions) {
+        if (action.appendContinuationItemsAction) {
+          const items = action.appendContinuationItemsAction.continuationItems || [];
+          
+          for (const item of items) {
+            if (item.gridVideoRenderer) {
+              const video = item.gridVideoRenderer;
+              const videoId = video.videoId;
+              
+              if (!videoId || results.has(videoId)) {
+                continue;
+              }
+
+              const title = video.title?.simpleText || video.title?.runs?.[0]?.text || '未命名直播';
+              const published = video.publishedTimeText?.simpleText || null;
+              const viewCount = video.viewCountText?.simpleText || null;
+              const badges = [];
+
+              if (video.badges) {
+                video.badges.forEach(badge => {
+                  const badgeText = badge.metadataBadgeRenderer?.label || '';
+                  if (badgeText.includes('LIVE')) {
+                    badges.push({ type: 'live', text: '正在直播' });
+                  }
+                });
+              }
+
+              const thumbnailUrl = video.thumbnail?.thumbnails?.[0]?.url || null;
+
+              results.set(videoId, {
+                videoId,
+                title,
+                url: `https://www.youtube.com/watch?v=${videoId}`,
+                publishedTimeText: published,
+                viewCountText: viewCount,
+                isLive: badges.some((badge) => badge.type === 'live'),
+                isUpcoming: false,
+                scheduledStart: null,
+                badges,
+                thumbnailUrl
+              });
+            } else if (item.continuationItemRenderer) {
+              continuationToken = item.continuationItemRenderer.continuationEndpoint?.continuationCommand?.token;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`${DEBUG_PREFIX} 解析响应失败`, error);
+    }
+
+    return {
+      videos: Array.from(results.values()),
+      continuationToken
+    };
   }
 
   function parseLiveVideosFromHtml(html) {
@@ -269,7 +432,16 @@
       });
     }
 
-    return Array.from(results.values());
+    let continuationToken = null;
+    const continuationMatch = html.match(/"continuation":"([^"]+)"/);
+    if (continuationMatch) {
+      continuationToken = continuationMatch[1];
+    }
+
+    return {
+      videos: Array.from(results.values()),
+      continuationToken
+    };
   }
 
   function renderList(videos) {
