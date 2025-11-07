@@ -1,10 +1,13 @@
 {
   "manifest_version": 3,
   "name": "ChenYiFaer Live Streams Helper",
-  "description": "Displays a live video list for the ChenYiFaer YouTube channel when you are signed in to YouTube, with rich debugging insights.",
+  "description": "Displays a live video list for the ChenYiFaer YouTube channel with chat download functionality.",
   "version": "1.0.0",
   "host_permissions": [
     "https://www.youtube.com/*"
+  ],
+  "permissions": [
+    "downloads"
   ],
   "content_scripts": [
     {
