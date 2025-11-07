@@ -95,11 +95,22 @@
 
     const refreshButton = document.createElement('button');
     refreshButton.type = 'button';
-    refreshButton.className = 'clh-button';
-    refreshButton.textContent = '刷新列表';
-    refreshButton.addEventListener('click', () => {
-      if (state.isLoggedIn) {
-        fetchLiveVideos();
+    refreshButton.className = 'clh-button clh-refresh-button';
+    refreshButton.textContent = '刷新状态';
+    refreshButton.addEventListener('click', async () => {
+      const originalText = refreshButton.textContent;
+      refreshButton.disabled = true;
+      refreshButton.textContent = '刷新中...';
+      
+      try {
+        if (state.isLoggedIn) {
+          await fetchLiveVideos();
+        } else {
+          await checkLoginAndFetch();
+        }
+      } finally {
+        refreshButton.disabled = false;
+        // Text will be updated by updateLoginStatus function
       }
     });
 
@@ -165,18 +176,33 @@
   function extractApiKey() {
     try {
       const scriptText = document.documentElement.innerHTML;
-      const apiKeyMatch = scriptText.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
-      if (apiKeyMatch) {
-        state.apiKey = apiKeyMatch[1];
-      } else {
-        state.apiKey = 'AIzaSyAO90d0o_cysLkFLV7-IqsmyGlInL4l3_I';
+      
+      // Try multiple patterns for API key extraction
+      const patterns = [
+        /"INNERTUBE_API_KEY":"([^"]+)"/,
+        /"innertubeApiKey":"([^"]+)"/,
+        /"apiKey":"([^"]+)"/
+      ];
+      
+      for (const pattern of patterns) {
+        const match = scriptText.match(pattern);
+        if (match && match[1]) {
+          state.apiKey = match[1];
+          console.log(`${DEBUG_PREFIX} 成功提取API密钥，长度: ${state.apiKey.length}`);
+          return;
+        }
       }
+      
+      // Fallback to public key
+      state.apiKey = 'AIzaSyAO90d0o_cysLkFLV7-IqsmyGlInL4l3_I';
+      console.log(`${DEBUG_PREFIX} 使用备用API密钥`);
     } catch (error) {
       state.apiKey = 'AIzaSyAO90d0o_cysLkFLV7-IqsmyGlInL4l3_I';
+      console.warn(`${DEBUG_PREFIX} API密钥提取失败，使用备用密钥`, error);
     }
   }
 
-  function checkLoginAndFetch() {
+  async function checkLoginAndFetch() {
     const detection = detectLoginState();
     updateLoginStatus(detection.loggedIn, detection);
 
@@ -188,7 +214,7 @@
 
     state.isLoggedIn = true;
     extractApiKey();
-    fetchLiveVideos();
+    await fetchLiveVideos();
   }
 
   function detectLoginState() {
@@ -225,7 +251,11 @@
       }
 
       const html = await response.text();
+      console.log(`${DEBUG_PREFIX} 获取到页面HTML，大小: ${html.length} 字符`);
+      
       const parseResult = parseLiveVideosFromHtml(html);
+      console.log(`${DEBUG_PREFIX} 初始解析出 ${parseResult.videos.length} 个视频`);
+      
       state.videos = parseResult.videos;
       state.continuationToken = parseResult.continuationToken;
       state.totalFetched = parseResult.videos.length;
@@ -233,9 +263,11 @@
       renderList(state.videos);
 
       if (state.continuationToken && state.hasMore) {
+        console.log(`${DEBUG_PREFIX} 发现分页令牌，开始获取更多视频...`);
         setMessage(`已加载 ${state.totalFetched} 条视频，正在获取更多…`);
         await fetchMoreVideos();
       } else {
+        console.log(`${DEBUG_PREFIX} 没有更多分页数据，完成加载。总计: ${state.videos.length} 个视频`);
         updateFetchStatus('success', '');
         if (state.videos.length === 0) {
           setMessage('当前频道暂无直播视频，稍后再来看看吧。');
@@ -252,9 +284,11 @@
 
   async function fetchMoreVideos() {
     if (state.isLoadingMore || !state.continuationToken || !state.hasMore) {
+      console.log(`${DEBUG_PREFIX} 跳过获取更多视频: isLoadingMore=${state.isLoadingMore}, hasToken=${!!state.continuationToken}, hasMore=${state.hasMore}`);
       return;
     }
 
+    console.log(`${DEBUG_PREFIX} 开始获取下一页视频...`);
     state.isLoadingMore = true;
 
     try {
@@ -263,7 +297,9 @@
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-GOOG-API-CLIENT': 'gl-js/ fire 8.0.0'
+          'X-GOOG-API-CLIENT': 'gl-js/ fire 8.0.0',
+          'X-YouTube-Client-Name': '1',
+          'X-YouTube-Client-Version': '2.20240101.00.00'
         },
         credentials: 'include',
         body: JSON.stringify({
@@ -271,7 +307,13 @@
           context: {
             client: {
               clientName: 'WEB',
-              clientVersion: '2.20240101.00.00'
+              clientVersion: '2.20240101.00.00',
+              hl: 'zh-CN',
+              gl: 'CN'
+            },
+            user: {},
+            request: {
+              useSsl: true
             }
           }
         })
@@ -284,12 +326,16 @@
       }
 
       const data = await response.json();
+      console.log(`${DEBUG_PREFIX} 收到API响应，大小: ${JSON.stringify(data).length} 字符`);
+      
       const parseResult = parseMoreVideosFromResponse(data);
+      console.log(`${DEBUG_PREFIX} 解析出 ${parseResult.videos.length} 个视频，新分页令牌: ${parseResult.continuationToken ? '存在' : '不存在'}`);
       
       if (parseResult.videos.length > 0) {
         const uniqueVideos = parseResult.videos.filter(
           newVideo => !state.videos.some(existingVideo => existingVideo.videoId === newVideo.videoId)
         );
+        console.log(`${DEBUG_PREFIX} 过滤后新增 ${uniqueVideos.length} 个唯一视频`);
         state.videos.push(...uniqueVideos);
         state.totalFetched = state.videos.length;
         renderList(state.videos);
@@ -299,9 +345,11 @@
       state.continuationToken = parseResult.continuationToken;
 
       if (state.continuationToken) {
+        console.log(`${DEBUG_PREFIX} 继续获取下一页...`);
         await new Promise(resolve => setTimeout(resolve, 500));
         await fetchMoreVideos();
       } else {
+        console.log(`${DEBUG_PREFIX} 没有更多分页令牌，完成加载。总计: ${state.videos.length} 个视频`);
         state.hasMore = false;
         updateFetchStatus('success', '');
         setMessage(`成功获取全部 ${state.videos.length} 条直播视频。`);
@@ -320,36 +368,58 @@
     let continuationToken = null;
 
     try {
-      const onResponseReceivedActions = data.onResponseReceivedActions || [];
+      // Try multiple response structures
+      const actions = data.onResponseReceivedActions || data.actions || [];
       
-      for (const action of onResponseReceivedActions) {
-        if (action.appendContinuationItemsAction) {
-          const items = action.appendContinuationItemsAction.continuationItems || [];
+      for (const action of actions) {
+        const appendAction = action.appendContinuationItemsAction || action.appendItemsAction;
+        if (appendAction) {
+          const items = appendAction.continuationItems || appendAction.items || [];
           
           for (const item of items) {
-            if (item.gridVideoRenderer) {
-              const video = item.gridVideoRenderer;
-              const videoId = video.videoId;
+            // Handle different video renderer types
+            const videoRenderer = item.gridVideoRenderer || item.videoRenderer || item.compactVideoRenderer;
+            if (videoRenderer) {
+              const videoId = videoRenderer.videoId;
               
               if (!videoId || results.has(videoId)) {
                 continue;
               }
 
-              const title = video.title?.simpleText || video.title?.runs?.[0]?.text || '未命名直播';
-              const published = video.publishedTimeText?.simpleText || null;
-              const viewCount = video.viewCountText?.simpleText || null;
+              const title = videoRenderer.title?.simpleText || 
+                           videoRenderer.title?.runs?.[0]?.text || 
+                           '未命名直播';
+              const published = videoRenderer.publishedTimeText?.simpleText || null;
+              const viewCount = videoRenderer.viewCountText?.simpleText || 
+                              videoRenderer.shortViewCountText?.simpleText || null;
               const badges = [];
 
-              if (video.badges) {
-                video.badges.forEach(badge => {
-                  const badgeText = badge.metadataBadgeRenderer?.label || '';
-                  if (badgeText.includes('LIVE')) {
+              // Handle different badge structures
+              if (videoRenderer.badges) {
+                videoRenderer.badges.forEach(badge => {
+                  const badgeRenderer = badge.metadataBadgeRenderer || badge;
+                  const badgeText = badgeRenderer.label || '';
+                  if (badgeText.includes('LIVE') || badgeText.includes('直播')) {
                     badges.push({ type: 'live', text: '正在直播' });
+                  } else if (badgeText.includes('UPCOMING') || badgeText.includes('即将')) {
+                    badges.push({ type: 'upcoming', text: '已预约直播' });
                   }
                 });
               }
 
-              const thumbnailUrl = video.thumbnail?.thumbnails?.[0]?.url || null;
+              // Check for live status in other ways
+              if (videoRenderer.thumbnailOverlays) {
+                videoRenderer.thumbnailOverlays.forEach(overlay => {
+                  if (overlay.thumbnailOverlayTimeStatusRenderer) {
+                    const status = overlay.thumbnailOverlayTimeStatusRenderer.style;
+                    if (status === 'LIVE') {
+                      badges.push({ type: 'live', text: '正在直播' });
+                    }
+                  }
+                });
+              }
+
+              const thumbnailUrl = videoRenderer.thumbnail?.thumbnails?.[0]?.url || null;
 
               results.set(videoId, {
                 videoId,
@@ -358,7 +428,7 @@
                 publishedTimeText: published,
                 viewCountText: viewCount,
                 isLive: badges.some((badge) => badge.type === 'live'),
-                isUpcoming: false,
+                isUpcoming: badges.some((badge) => badge.type === 'upcoming'),
                 scheduledStart: null,
                 badges,
                 thumbnailUrl
@@ -381,62 +451,110 @@
 
   function parseLiveVideosFromHtml(html) {
     const results = new Map();
-    const videoRendererRegex = /"videoRenderer":\{([\s\S]*?)"trackingParams"/g;
-    let match;
-
-    while ((match = videoRendererRegex.exec(html))) {
-      const block = match[1];
-      const videoIdMatch = block.match(/"videoId":"([^"]+)"/);
-      if (!videoIdMatch) {
-        continue;
-      }
-
-      const videoId = videoIdMatch[1];
-      if (results.has(videoId)) {
-        continue;
-      }
-
-      const title = decodeText(extractTextField(block, 'title')) || '未命名直播';
-      const published = decodeText(extractTextField(block, 'publishedTimeText')) || null;
-      const viewCount = decodeText(extractTextField(block, 'viewCountText')) || null;
-      const badges = [];
-
-      if (/"style":"LIVE"/.test(block) || /"label":"LIVE"/.test(block)) {
-        badges.push({ type: 'live', text: '正在直播' });
-      }
-
-      const upcomingMatch = block.match(/"upcomingEventData":\{"startTime":"(\d+)"(?:,"upcomingEventType":"([^"]+)")?/);
-      let scheduledStart = null;
-      if (upcomingMatch) {
-        const timestamp = Number(upcomingMatch[1]) * 1000;
-        if (Number.isFinite(timestamp)) {
-          scheduledStart = new Date(timestamp);
-          badges.push({ type: 'upcoming', text: '已预约直播' });
+    
+    // Try multiple patterns to find video renderers
+    const patterns = [
+      /"videoRenderer":\{([\s\S]*?)"trackingParams"/g,
+      /"gridVideoRenderer":\{([\s\S]*?)"trackingParams"/g,
+      /"compactVideoRenderer":\{([\s\S]*?)"trackingParams"/g
+    ];
+    
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(html))) {
+        const block = match[1];
+        const videoIdMatch = block.match(/"videoId":"([^"]+)"/);
+        if (!videoIdMatch) {
+          continue;
         }
+
+        const videoId = videoIdMatch[1];
+        if (results.has(videoId)) {
+          continue;
+        }
+
+        const title = decodeText(extractTextField(block, 'title')) || '未命名直播';
+        const published = decodeText(extractTextField(block, 'publishedTimeText')) || null;
+        const viewCount = decodeText(extractTextField(block, 'viewCountText')) || 
+                         decodeText(extractTextField(block, 'shortViewCountText')) || null;
+        const badges = [];
+
+        // Check for live status in multiple ways
+        if (/"style":"LIVE"/.test(block) || /"label":"LIVE"/.test(block) || /"label":"直播"/.test(block)) {
+          badges.push({ type: 'live', text: '正在直播' });
+        }
+
+        const upcomingMatch = block.match(/"upcomingEventData":\{"startTime":"(\d+)"(?:,"upcomingEventType":"([^"]+)")?/);
+        let scheduledStart = null;
+        if (upcomingMatch) {
+          const timestamp = Number(upcomingMatch[1]) * 1000;
+          if (Number.isFinite(timestamp)) {
+            scheduledStart = new Date(timestamp);
+            badges.push({ type: 'upcoming', text: '已预约直播' });
+          }
+        }
+
+        // Check for live status in thumbnail overlays
+        if (/"thumbnailOverlayTimeStatusRenderer":\{"style":"LIVE"/.test(block)) {
+          badges.push({ type: 'live', text: '正在直播' });
+        }
+
+        const thumbnailMatch = block.match(/"thumbnails":\[\{"url":"([^"]+)"/);
+        const thumbnailUrl = thumbnailMatch ? decodeText(thumbnailMatch[1]) : null;
+
+        results.set(videoId, {
+          videoId,
+          title,
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          publishedTimeText: published,
+          viewCountText: viewCount,
+          isLive: badges.some((badge) => badge.type === 'live'),
+          isUpcoming: badges.some((badge) => badge.type === 'upcoming'),
+          scheduledStart,
+          badges,
+          thumbnailUrl
+        });
       }
-
-      const thumbnailMatch = block.match(/"thumbnails":\[\{"url":"([^"]+)"/);
-      const thumbnailUrl = thumbnailMatch ? decodeText(thumbnailMatch[1]) : null;
-
-      results.set(videoId, {
-        videoId,
-        title,
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-        publishedTimeText: published,
-        viewCountText: viewCount,
-        isLive: badges.some((badge) => badge.type === 'live'),
-        isUpcoming: badges.some((badge) => badge.type === 'upcoming'),
-        scheduledStart,
-        badges,
-        thumbnailUrl
-      });
     }
 
     let continuationToken = null;
-    const continuationMatch = html.match(/"continuation":"([^"]+)"/);
-    if (continuationMatch) {
-      continuationToken = continuationMatch[1];
+    
+    // Try multiple patterns for continuation token extraction
+    const continuationPatterns = [
+      /"continuation":"([^"]+)"/g,
+      /"token":"([^"]+)"/g,
+      /"continuationEndpoint":\{"continuationCommand":\{"token":"([^"]+)"/g
+    ];
+    
+    for (const pattern of continuationPatterns) {
+      const matches = [...html.matchAll(pattern)];
+      if (matches.length > 0) {
+        // Use the last match which is usually the pagination token
+        continuationToken = matches[matches.length - 1][1];
+        console.log(`${DEBUG_PREFIX} 使用模式 ${pattern} 找到分页令牌，长度: ${continuationToken.length}`);
+        break;
+      }
     }
+    
+    if (!continuationToken) {
+      console.log(`${DEBUG_PREFIX} 未找到分页令牌，尝试更多模式...`);
+      // Try more specific patterns
+      const specialPatterns = [
+        /"browseId":"FEuploads","params":"[^"]*","continuation":"([^"]+)"/g,
+        /"gridContinuation":"([^"]+)"/g
+      ];
+      
+      for (const pattern of specialPatterns) {
+        const matches = [...html.matchAll(pattern)];
+        if (matches.length > 0) {
+          continuationToken = matches[matches.length - 1][1];
+          console.log(`${DEBUG_PREFIX} 使用特殊模式找到分页令牌，长度: ${continuationToken.length}`);
+          break;
+        }
+      }
+    }
+    
+    console.log(`${DEBUG_PREFIX} 最终分页令牌: ${continuationToken ? '存在' : '不存在'}`);
 
     return {
       videos: Array.from(results.values()),
@@ -569,17 +687,25 @@
       return;
     }
 
+    const refreshButton = state.container?.querySelector('.clh-refresh-button');
+    
     if (loggedIn) {
       state.loginStatusEl.textContent = '已登录';
       state.loginStatusEl.dataset.variant = 'ok';
       if (state.container) {
         state.container.dataset.loginState = 'signed-in';
       }
+      if (refreshButton) {
+        refreshButton.textContent = '刷新列表';
+      }
     } else {
       state.loginStatusEl.textContent = '未登录';
       state.loginStatusEl.dataset.variant = 'warn';
       if (state.container) {
         state.container.dataset.loginState = 'signed-out';
+      }
+      if (refreshButton) {
+        refreshButton.textContent = '刷新状态';
       }
     }
 

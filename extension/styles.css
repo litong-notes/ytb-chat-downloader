@@ -367,6 +367,24 @@
   background: rgba(76, 175, 80, 0.3);
 }
 
+.clh-refresh-button {
+  background: rgba(33, 150, 243, 0.2);
+  color: #64b5f6;
+}
+
+.clh-refresh-button:hover:not(:disabled) {
+  background: rgba(33, 150, 243, 0.3);
+}
+
+.clh-container[data-login-state="signed-out"] .clh-refresh-button {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ffb74d;
+}
+
+.clh-container[data-login-state="signed-out"] .clh-refresh-button:hover:not(:disabled) {
+  background: rgba(255, 152, 0, 0.3);
+}
+
 @media (max-width: 900px) {
   .clh-container {
     top: 64px;
