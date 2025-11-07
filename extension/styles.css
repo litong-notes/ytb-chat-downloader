@@ -47,6 +47,12 @@
   padding: 12px 14px;
   gap: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: move;
+  user-select: none;
+}
+
+.clh-header.dragging {
+  cursor: grabbing;
 }
 
 .clh-title-wrap {
